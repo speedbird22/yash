@@ -1,5 +1,6 @@
 import streamlit as st
 import os
+import json
 from dotenv import load_dotenv
 from google.cloud import vision
 from google.cloud.vision_v1 import ImageAnnotatorClient
@@ -7,9 +8,15 @@ from google.generativeai import GenerativeModel
 import firebase_admin
 from firebase_admin import credentials, firestore
 from google.oauth2 import service_account
+from google.auth.transport.requests import Request
 from PIL import Image
 import io
 import pandas as pd
+import logging
+
+# Set up logging
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv()
@@ -44,15 +51,30 @@ firebase_credentials = {
     "universe_domain": "googleapis.com"
 }
 
+# Debug: Log Vision credentials info (non-sensitive fields)
+st.write("Debug: Vision Service Account Info")
+st.write(f"Project ID: {google_vision_credentials.get('project_id')}")
+st.write(f"Client Email: {google_vision_credentials.get('client_email')}")
+st.write(f"Token URI: {google_vision_credentials.get('token_uri')}")
+logger.debug("Vision credentials: %s", {k: v for k, v in google_vision_credentials.items() if k != 'private_key'})
+
 # Initialize Google Vision client with embedded credentials
+vision_client = None
 try:
     vision_credentials = service_account.Credentials.from_service_account_info(
         google_vision_credentials,
-        scopes=['https://www.googleapis.com/auth/cloud-platform']
+        scopes=['https://www.googleapis.com/auth/cloud-vision']
     )
+    # Debug: Test token generation
+    vision_credentials.refresh(Request())
+    st.write("Debug: Vision API token generated successfully")
+    logger.debug("Vision API token: %s", vision_credentials.token[:10] + "...")
     vision_client = ImageAnnotatorClient(credentials=vision_credentials)
 except Exception as e:
     st.error(f"Error initializing Vision client: {str(e)}")
+    st.write("Debug: Ensure Vision API is enabled in project 'halogen-premise-462605-t3' and service account has 'roles/vision.apiUser'.")
+    st.write("Debug: Check billing account and API quotas in Google Cloud Console.")
+    logger.error("Vision client initialization failed: %s", str(e))
     vision_client = None
 
 # Initialize Gemini API
@@ -60,9 +82,12 @@ gemini_api_key = os.getenv("GEMINI_API_KEY", "AIzaSyBRy86kB4ASDYgO0dttEOBYvocY6n
 if gemini_api_key:
     os.environ["GOOGLE_API_KEY"] = gemini_api_key
     gemini_model = GenerativeModel('gemini-1.5-flash')
+    st.write("Debug: Gemini API key loaded successfully")
+    logger.debug("Gemini API key loaded")
 else:
     st.error("Gemini API key not found. Please add GEMINI_API_KEY to .env file.")
     gemini_model = None
+    logger.error("Gemini API key missing")
 
 # Initialize Firebase Firestore with embedded credentials
 try:
@@ -71,27 +96,43 @@ try:
         firebase_admin.initialize_app(firebase_cred)
     db = firestore.client()
     menu_ref = db.collection('menu')
+    st.write("Debug: Firestore initialized successfully")
+    logger.debug("Firestore initialized")
 except Exception as e:
     st.error(f"Error initializing Firestore: {str(e)}")
+    logger.error("Firestore initialization failed: %s", str(e))
     menu_ref = None
 
 # Function to detect dish using Google Vision
 def detect_dish(image_file):
     if vision_client is None:
         raise Exception("Vision client not initialized")
-    content = image_file.read()
-    image = vision.Image(content=content)
-    response = vision_client.label_detection(image=image)
-    labels = [label.description for label in response.label_annotations]
-    return labels
+    try:
+        content = image_file.read()
+        image = vision.Image(content=content)
+        response = vision_client.label_detection(image=image)
+        if response.error.message:
+            logger.error("Vision API error: %s", response.error.message)
+            raise Exception(f"Vision API error: {response.error.message}")
+        labels = [label.description for label in response.label_annotations]
+        logger.debug("Vision API labels: %s", labels)
+        return labels
+    except Exception as e:
+        logger.error("Dish detection failed: %s", str(e))
+        raise
 
 # Function to get Gemini suggestions
 def get_gemini_suggestions(dish_labels):
     if gemini_model is None:
         raise Exception("Gemini model not initialized")
-    prompt = f"Based on the dish labels {dish_labels}, provide a detailed recipe for the dish or suggest similar dishes with brief descriptions."
-    response = gemini_model.generate_content([prompt])
-    return response.text
+    try:
+        prompt = f"Based on the dish labels {dish_labels}, provide a detailed recipe for the dish or suggest similar dishes with brief descriptions."
+        response = gemini_model.generate_content([prompt])
+        logger.debug("Gemini response: %s", response.text[:100] + "...")
+        return response.text
+    except Exception as e:
+        logger.error("Gemini suggestion failed: %s", str(e))
+        raise
 
 # Function to search Firestore menu
 def search_firebase_menu(dish_labels):
@@ -110,8 +151,10 @@ def search_firebase_menu(dish_labels):
                     'Ingredients': ', '.join(dish.get('ingredients', [])),
                     'Category': dish.get('category')
                 })
+        logger.debug("Firestore matches: %d", len(matching_dishes))
         return pd.DataFrame(matching_dishes)
     except Exception as e:
+        logger.error("Firestore query failed: %s", str(e))
         st.error(f"Error querying Firestore: {str(e)}")
         return pd.DataFrame()
 
