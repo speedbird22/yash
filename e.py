@@ -6,10 +6,22 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 from PIL import Image
 import io
+from cryptography.hazmat.primitives import serialization
 
 # Initialize Streamlit app
 st.title("Dish Recognition and Menu Matching")
 st.write("Upload an image of a dish, and we'll identify it and check if it's on the menu!")
+
+# Function to validate PEM key
+def validate_pem_key(key_str, key_name):
+    try:
+        # Ensure the key is stripped of extra whitespace
+        key_str = key_str.strip()
+        serialization.load_pem_private_key(key_str.encode('utf-8'), password=None)
+        return True
+    except Exception as e:
+        st.error(f"Invalid PEM key for {key_name}: {str(e)}")
+        return False
 
 # Initialize APIs
 try:
@@ -28,9 +40,11 @@ try:
     if missing_keys:
         st.error(f"Invalid Google Cloud Vision credentials. Missing keys: {', '.join(missing_keys)}.")
         st.stop()
-    st.write("DEBUG: Vision credentials keys:", list(vision_credentials_dict.keys()))
+    if not validate_pem_key(vision_credentials_dict["private_key"], "Google Cloud Vision"):
+        st.stop()
     vision_credentials = service_account.Credentials.from_service_account_info(vision_credentials_dict)
     vision_client = vision.ImageAnnotatorClient(credentials=vision_credentials)
+    st.write("DEBUG: Google Cloud Vision initialized successfully")
 
     # Firebase setup
     firebase_credentials_dict = dict(st.secrets["FIREBASE_CREDENTIALS"])
@@ -38,20 +52,22 @@ try:
     if missing_keys:
         st.error(f"Invalid Firebase credentials. Missing keys: {', '.join(missing_keys)}.")
         st.stop()
-    st.write("DEBUG: Firebase credentials keys:", list(firebase_credentials_dict.keys()))
+    if not validate_pem_key(firebase_credentials_dict["private_key"], "Firebase"):
+        st.stop()
     if not firebase_admin._apps:
         firebase_cred = credentials.Certificate(firebase_credentials_dict)
         firebase_admin.initialize_app(firebase_cred)
     db = firestore.client()
+    st.write("DEBUG: Firebase initialized successfully")
 
     # Gemini API setup
     gemini_api_key = st.secrets["GEMINI"]["api_key"]
     if not gemini_api_key:
         st.error("Gemini API key is empty in secrets.toml.")
         st.stop()
-    st.write("DEBUG: Gemini API key loaded:", bool(gemini_api_key))
     genai.configure(api_key=gemini_api_key)
     gemini_model = genai.GenerativeModel("gemini-1.5-flash")
+    st.write("DEBUG: Gemini API initialized successfully")
 
 except Exception as e:
     st.error(f"Error initializing APIs: {str(e)}")
