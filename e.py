@@ -12,22 +12,43 @@ import json
 st.title("Dish Recognition and Menu Matching")
 st.write("Upload an image of a dish, and we'll identify it and check if it's on the menu!")
 
-# Load credentials and initialize APIs
+# Hardcoded credentials (REPLACE WITH YOUR ACTUAL VALUES)
+GEMINI_API_KEY = "YOUR_GEMINI_API_KEY"  # Replace with your Gemini API key
+FIREBASE_CREDENTIALS = {  # Replace with your Firebase service account JSON content
+    "type": "service_account",
+    "project_id": "your-project-id",
+    "private_key_id": "your-private-key-id",
+    "private_key": "-----BEGIN PRIVATE KEY-----\nyour-private-key\n-----END PRIVATE KEY-----\n",
+    "client_email": "your-client-email@your-project-id.iam.gserviceaccount.com",
+    "client_id": "your-client-id",
+    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+    "token_uri": "https://oauth2.googleapis.com/token",
+    "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+    "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/your-client-email%40your-project-id.iam.gserviceaccount.com"
+}
+
+# Initialize APIs
 try:
-    # Google Cloud Vision setup
-    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "vision-credentials.json")
+    # Google Cloud Vision setup (from secrets.toml)
+    if "GOOGLE_CLOUD_VISION_CREDENTIALS" not in st.secrets:
+        st.error("Google Cloud Vision credentials not found in secrets.toml under [GOOGLE_CLOUD_VISION_CREDENTIALS].")
+        st.stop()
+    vision_credentials = dict(st.secrets["GOOGLE_CLOUD_VISION_CREDENTIALS"])
+    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "temp_vision_credentials.json"
+    with open("temp_vision_credentials.json", "w") as f:
+        json.dump(vision_credentials, f)
     vision_client = vision.ImageAnnotatorClient()
 
     # Firebase setup
     if not firebase_admin._apps:
-        firebase_cred = credentials.Certificate(os.getenv("FIREBASE_CREDENTIALS", "firebase-credentials.json"))
+        firebase_cred = credentials.Certificate(FIREBASE_CREDENTIALS)
         firebase_admin.initialize_app(firebase_cred)
     db = firestore.client()
 
     # Gemini API setup
-    gemini_api_key = os.getenv("GEMINI_API_KEY", st.secrets.get("GEMINI_API_KEY", ""))
-    if not gemini_api_key:
-        st.error("Gemini API key not found. Please set it in .env or Streamlit secrets.")
+    gemini_api_key = GEMINI_API_KEY
+    if not gemini_api_key or gemini_api_key == "YOUR_GEMINI_API_KEY":
+        st.error("Gemini API key not set. Please update GEMINI_API_KEY in the code.")
         st.stop()
     genai.configure(api_key=gemini_api_key)
     gemini_model = genai.GenerativeModel("gemini-1.5-flash")
@@ -35,6 +56,10 @@ try:
 except Exception as e:
     st.error(f"Error initializing APIs: {str(e)}")
     st.stop()
+finally:
+    # Clean up temporary Vision credentials file
+    if os.path.exists("temp_vision_credentials.json"):
+        os.remove("temp_vision_credentials.json")
 
 # Function to detect dish using Google Cloud Vision
 def detect_dish(image_content):
