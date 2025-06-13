@@ -1,65 +1,61 @@
 import streamlit as st
 from google.cloud import vision
+from google.oauth2 import service_account
 import google.generativeai as genai
 import firebase_admin
 from firebase_admin import credentials, firestore
-import os
 from PIL import Image
 import io
-import json
 
 # Initialize Streamlit app
 st.title("Dish Recognition and Menu Matching")
 st.write("Upload an image of a dish, and we'll identify it and check if it's on the menu!")
 
-# Hardcoded credentials (REPLACE WITH YOUR ACTUAL VALUES)
-GEMINI_API_KEY = "YOUR_GEMINI_API_KEY"  # Replace with your Gemini API key
-FIREBASE_CREDENTIALS = {  # Replace with your Firebase service account JSON content
-    "type": "service_account",
-    "project_id": "your-project-id",
-    "private_key_id": "your-private-key-id",
-    "private_key": "-----BEGIN PRIVATE KEY-----\nyour-private-key\n-----END PRIVATE KEY-----\n",
-    "client_email": "your-client-email@your-project-id.iam.gserviceaccount.com",
-    "client_id": "your-client-id",
-    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-    "token_uri": "https://oauth2.googleapis.com/token",
-    "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-    "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/your-client-email%40your-project-id.iam.gserviceaccount.com"
-}
-
 # Initialize APIs
 try:
-    # Google Cloud Vision setup (from secrets.toml)
-    if "GOOGLE_CLOUD_VISION_CREDENTIALS" not in st.secrets:
-        st.error("Google Cloud Vision credentials not found in secrets.toml under [GOOGLE_CLOUD_VISION_CREDENTIALS].")
+    # Validate secrets
+    if not all(key in st.secrets for key in ["GOOGLE_CLOUD_VISION_CREDENTIALS", "FIREBASE_CREDENTIALS", "GEMINI"]):
+        st.error("Missing sections in secrets.toml: Ensure GOOGLE_CLOUD_VISION_CREDENTIALS, FIREBASE_CREDENTIALS, and GEMINI are defined.")
         st.stop()
-    vision_credentials = dict(st.secrets["GOOGLE_CLOUD_VISION_CREDENTIALS"])
-    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "temp_vision_credentials.json"
-    with open("temp_vision_credentials.json", "w") as f:
-        json.dump(vision_credentials, f)
-    vision_client = vision.ImageAnnotatorClient()
+
+    # Debug: Confirm secrets are loaded
+    st.write("DEBUG: Secrets sections found:", list(st.secrets.keys()))
+
+    # Google Cloud Vision setup
+    vision_credentials_dict = dict(st.secrets["GOOGLE_CLOUD_VISION_CREDENTIALS"])
+    required_keys = ["type", "project_id", "private_key_id", "private_key", "client_email", "client_id", "auth_uri", "token_uri", "universe_domain"]
+    missing_keys = [key for key in required_keys if key not in vision_credentials_dict]
+    if missing_keys:
+        st.error(f"Invalid Google Cloud Vision credentials. Missing keys: {', '.join(missing_keys)}.")
+        st.stop()
+    st.write("DEBUG: Vision credentials keys:", list(vision_credentials_dict.keys()))
+    vision_credentials = service_account.Credentials.from_service_account_info(vision_credentials_dict)
+    vision_client = vision.ImageAnnotatorClient(credentials=vision_credentials)
 
     # Firebase setup
+    firebase_credentials_dict = dict(st.secrets["FIREBASE_CREDENTIALS"])
+    missing_keys = [key for key in required_keys if key not in firebase_credentials_dict]
+    if missing_keys:
+        st.error(f"Invalid Firebase credentials. Missing keys: {', '.join(missing_keys)}.")
+        st.stop()
+    st.write("DEBUG: Firebase credentials keys:", list(firebase_credentials_dict.keys()))
     if not firebase_admin._apps:
-        firebase_cred = credentials.Certificate(FIREBASE_CREDENTIALS)
+        firebase_cred = credentials.Certificate(firebase_credentials_dict)
         firebase_admin.initialize_app(firebase_cred)
     db = firestore.client()
 
     # Gemini API setup
-    gemini_api_key = GEMINI_API_KEY
-    if not gemini_api_key or gemini_api_key == "YOUR_GEMINI_API_KEY":
-        st.error("Gemini API key not set. Please update GEMINI_API_KEY in the code.")
+    gemini_api_key = st.secrets["GEMINI"]["api_key"]
+    if not gemini_api_key:
+        st.error("Gemini API key is empty in secrets.toml.")
         st.stop()
+    st.write("DEBUG: Gemini API key loaded:", bool(gemini_api_key))
     genai.configure(api_key=gemini_api_key)
     gemini_model = genai.GenerativeModel("gemini-1.5-flash")
 
 except Exception as e:
     st.error(f"Error initializing APIs: {str(e)}")
     st.stop()
-finally:
-    # Clean up temporary Vision credentials file
-    if os.path.exists("temp_vision_credentials.json"):
-        os.remove("temp_vision_credentials.json")
 
 # Function to detect dish using Google Cloud Vision
 def detect_dish(image_content):
@@ -67,12 +63,9 @@ def detect_dish(image_content):
         image = vision.Image(content=image_content)
         response = vision_client.label_detection(image=image)
         labels = response.label_annotations
-        dish_labels = [label.description for label in labels if "food" in label.description.lower() or "dish" in label.description.lower()]
-        
+        dish_labels = [label.description for label in labels][:5]  # Take top 5 labels
         if not dish_labels:
             return "Unknown dish"
-        
-        # Use Gemini to refine the dish identification
         prompt = f"Based on the following labels from an image, identify the most likely dish: {', '.join(dish_labels)}"
         response = gemini_model.generate_content(prompt)
         return response.text.strip()
@@ -81,6 +74,7 @@ def detect_dish(image_content):
         return None
 
 # Function to fetch menu from Firebase
+@st.cache_data(ttl=3600)  # Cache for 1 hour
 def fetch_menu():
     try:
         menu_ref = db.collection("menu")
@@ -95,9 +89,7 @@ def fetch_menu():
 def find_matching_dish(dish_name, menu_items):
     try:
         if not menu_items:
-            return None, "No menu items found in the database."
-        
-        # Create a prompt for Gemini to match the dish
+            return None, "No menu items found in the database. Please contact the restaurant admin."
         menu_text = "\n".join([f"- {item['name']}: {item.get('description', '')}" for item in menu_items])
         prompt = f"""
         Given the dish '{dish_name}', find the most similar or exact match from the following menu:
@@ -107,14 +99,11 @@ def find_matching_dish(dish_name, menu_items):
         """
         response = gemini_model.generate_content(prompt)
         match = response.text.strip()
-        
-        # Check if an exact or close match was found
         for item in menu_items:
             if item["name"].lower() == match.lower():
                 return item, "Exact match found!"
             if match.lower() in item["name"].lower() or match.lower() in item.get("description", "").lower():
                 return item, "Similar dish found!"
-        
         return None, match if match != "No close match found" else "No close match found in the menu."
     except Exception as e:
         st.error(f"Error matching dish: {str(e)}")
@@ -124,33 +113,29 @@ def find_matching_dish(dish_name, menu_items):
 uploaded_file = st.file_uploader("Upload an image of the dish", type=["jpg", "png", "jpeg"])
 
 if uploaded_file is not None:
-    # Display uploaded image
-    image = Image.open(uploaded_file)
-    st.image(image, caption="Uploaded Dish", use_column_width=True)
-
-    # Convert image to bytes for Vision API
-    img_byte_arr = io.BytesIO()
-    image.save(img_byte_arr, format=image.format)
-    img_content = img_byte_arr.getvalue()
-
-    # Detect dish
-    with st.spinner("Identifying the dish..."):
-        dish_name = detect_dish(img_content)
-    
-    if dish_name:
-        st.write(f"Detected dish: **{dish_name}**")
-        
-        # Fetch menu and find matching dish
-        with st.spinner("Checking menu for matches..."):
-            menu_items = fetch_menu()
-            match, message = find_matching_dish(dish_name, menu_items)
-        
-        # Display results
-        st.subheader("Menu Match Result")
-        st.write(message)
-        if match:
-            st.write(f"**Dish Name**: {match['name']}")
-            st.write(f"**Description**: {match.get('description', 'No description available')}")
-            st.write(f"**Ingredients**: {', '.join(match.get('ingredients', []))}")
-    else:
-        st.error("Could not identify the dish. Please try another image.")
+    try:
+        image = Image.open(uploaded_file)
+        if image.format not in ["JPEG", "PNG"]:
+            st.error("Unsupported image format. Please upload a JPG or PNG image.")
+            st.stop()
+        st.image(image, caption="Uploaded Dish", use_column_width=True)
+        img_byte_arr = io.BytesIO()
+        image.save(img_byte_arr, format=image.format)
+        img_content = img_byte_arr.getvalue()
+        with st.spinner("Identifying the dish..."):
+            dish_name = detect_dish(img_content)
+        if dish_name:
+            st.write(f"Detected dish: **{dish_name}**")
+            with st.spinner("Checking menu for matches..."):
+                menu_items = fetch_menu()
+                match, message = find_matching_dish(dish_name, menu_items)
+            st.subheader("Menu Match Result")
+            st.write(message)
+            if match:
+                st.write(f"**Dish Name**: {match['name']}")
+                st.write(f"**Description**: {match.get('description', 'No description available')}")
+                st.write(f"**Ingredients**: {', '.join(match.get('ingredients', []))}")
+        else:
+            st.error("Could not identify the dish. Please try another image.")
+    except Exception as e:
+        st.error(f"Error processing image: {str(e)}")
