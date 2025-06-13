@@ -91,7 +91,7 @@ def detect_dish(image_content):
 @st.cache_data(ttl=3600)
 def fetch_menu():
     try:
-        menu_ref = db.collection("recipe_archive")
+        menu_ref = db.collection("menu")
         docs = menu_ref.stream()
         menu_items = [{"id": doc.id, **doc.to_dict()} for doc in docs]
         return menu_items
