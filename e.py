@@ -8,85 +8,78 @@ from cryptography.hazmat.primitives import serialization
 from PIL import Image
 import io
 
-# Custom CSS for a complex, textured UI inspired by the image
+# Custom CSS for enhanced UI features without colors
 st.markdown("""
     <style>
-    /* Dark gradient background with a subtle texture effect */
+    /* Reset any previous background colors */
     .stApp {
-        background: linear-gradient(135deg, #1a0033 0%, #330066 50%, #003366 100%);
-        color: #e0e0e0;
+        background: none;
         font-family: 'Arial', sans-serif;
     }
-    /* Textured container for main content */
-    .main-container {
-        background: rgba(255, 255, 255, 0.05);
-        border-radius: 15px;
-        padding: 20px;
-        box-shadow: 0 8px 16px rgba(0, 0, 0, 0.5);
-        backdrop-filter: blur(5px);
-        margin: 20px 0;
-    }
-    /* Header styling with neon glow */
-    .header {
-        background: linear-gradient(90deg, #ff00cc, #3333ff);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        text-align: center;
-        font-size: 32px;
-        font-weight: bold;
-        text-shadow: 0 0 10px rgba(255, 0, 204, 0.7), 0 0 20px rgba(51, 51, 255, 0.7);
-        margin-bottom: 20px;
-    }
-    /* Sidebar styling */
+    /* Sidebar styling without colors */
     .stSidebar {
-        background: linear-gradient(135deg, #330066, #003366);
-        color: #e0e0e0;
+        background: none;
     }
-    .stSidebar .sidebar-content {
-        background: rgba(255, 255, 255, 0.1);
+    /* File uploader enhancements */
+    .stFileUploader {
+        border: 2px dashed #ccc;
         border-radius: 10px;
-        padding: 10px;
-    }
-    /* Button styling with neon effect and hover animation */
-    .stButton>button {
-        background: linear-gradient(45deg, #ff00cc, #3333ff);
-        color: white;
-        border: none;
-        border-radius: 10px;
-        padding: 10px 20px;
-        font-weight: bold;
-        box-shadow: 0 0 10px rgba(255, 0, 204, 0.5), 0 0 20px rgba(51, 51, 255, 0.5);
+        padding: 20px;
+        text-align: center;
         transition: all 0.3s ease;
     }
-    .stButton>button:hover {
-        background: linear-gradient(45deg, #ff33cc, #6666ff);
-        box-shadow: 0 0 15px rgba(255, 0, 204, 0.8), 0 0 30px rgba(51, 51, 255, 0.8);
-        transform: scale(1.05);
+    .stFileUploader:hover {
+        border-color: #999;
+        background: rgba(0, 0, 0, 0.05);
+        transform: scale(1.02);
     }
-    /* Result box with a textured, glowing border */
-    .result-box {
-        background: rgba(255, 255, 255, 0.1);
+    /* Button animation for file uploader */
+    .stFileUploader button {
+        border-radius: 8px;
+        padding: 10px 20px;
+        font-weight: bold;
+        transition: all 0.3s ease;
+    }
+    .stFileUploader button:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+    }
+    /* Custom loading animation for processing */
+    .custom-spinner {
+        display: inline-block;
+        width: 40px;
+        height: 40px;
+        border: 4px solid #f3f3f3;
+        border-top: 4px solid #999;
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+        margin-right: 10px;
+    }
+    @keyframes spin {
+        0% { transform: rotate(0deg); }
+        100% { transform: rotate(360deg); }
+    }
+    /* Card-like container for output */
+    .output-card {
+        background: #fff;
+        border-radius: 10px;
         padding: 15px;
-        border-radius: 10px;
-        border: 1px solid rgba(255, 0, 204, 0.3);
-        box-shadow: 0 0 10px rgba(255, 0, 204, 0.3);
+        box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
         margin-top: 10px;
+        opacity: 0;
+        animation: fadeIn 0.5s ease forwards;
     }
-    /* Headings with neon glow */
+    @keyframes fadeIn {
+        0% { opacity: 0; transform: translateY(10px); }
+        100% { opacity: 1; transform: translateY(0); }
+    }
+    /* Remove any previous color-related styles for headers and text */
     h3, h4 {
-        color: #ff66cc;
-        text-shadow: 0 0 5px rgba(255, 102, 204, 0.5);
+        color: inherit;
+        text-shadow: none;
     }
-    /* Spinner text color */
     .stSpinner {
-        color: #ff66cc;
-    }
-    /* File uploader styling */
-    .stFileUploader {
-        background: rgba(255, 255, 255, 0.05);
-        border-radius: 10px;
-        padding: 10px;
-        border: 1px solid rgba(255, 0, 204, 0.3);
+        color: inherit;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -103,12 +96,10 @@ with st.sidebar:
     """)
 
 # Header
-st.markdown('<div class="header">🍽️ Dish Recognition and Menu Matching</div>', unsafe_allow_html=True)
+st.markdown("### 🍽️ Dish Recognition and Menu Matching")
 
 # Main content container
 with st.container():
-    st.markdown('<div class="main-container">', unsafe_allow_html=True)
-
     # Function to validate PEM key
     def validate_pem_key(key_str, key_name):
         try:
@@ -220,7 +211,7 @@ with st.container():
             st.error(f"Error matching dish: {str(e)}")
             return None, "Error occurred while matching dish."
 
-    # Streamlit file uploader with improved layout
+    # Streamlit file uploader with improved features
     st.markdown("### 📸 Upload Your Dish Image")
     uploaded_file = st.file_uploader("Choose a JPG or PNG image of the dish", type=["jpg", "png", "jpeg"])
 
@@ -240,16 +231,24 @@ with st.container():
 
             with col2:
                 st.markdown("#### Analysis Results")
-                with st.spinner("🔍 Identifying the dish..."):
+                with st.spinner(""):
+                    # Custom spinner with animation
+                    st.markdown('<div class="custom-spinner"></div>Identifying the dish...', unsafe_allow_html=True)
                     dish_name = detect_dish(image.tobytes())
                 if dish_name:
-                    st.success(f"Detected dish: **{dish_name}**")
-                    with st.spinner("🍴 Checking menu for matches..."):
+                    # Output in a styled card with fade-in animation
+                    st.markdown('<div class="output-card">', unsafe_allow_html=True)
+                    st.markdown(f"**Detected Dish**: {dish_name}")
+                    st.markdown('</div>', unsafe_allow_html=True)
+
+                    with st.spinner(""):
+                        # Custom spinner with animation
+                        st.markdown('<div class="custom-spinner"></div>Checking menu for matches...', unsafe_allow_html=True)
                         menu_items = fetch_menu()
                         match, message = find_matching_dish(dish_name, menu_items)
                     
-                    # Display results in a styled box
-                    st.markdown('<div class="result-box">', unsafe_allow_html=True)
+                    # Display results in a styled card with fade-in animation
+                    st.markdown('<div class="output-card">', unsafe_allow_html=True)
                     st.markdown("**Menu Match Result**")
                     st.write(message)
                     if match:
@@ -261,5 +260,3 @@ with st.container():
                     st.error("Could not identify the dish. Please try another image.")
         except Exception as e:
             st.error(f"Error processing image: {str(e)}")
-
-    st.markdown('</div>', unsafe_allow_html=True)
