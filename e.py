@@ -8,9 +8,24 @@ from cryptography.hazmat.primitives import serialization
 from PIL import Image
 import io
 import pandas as pd
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
+
+# Streamlit configuration
+st.set_page_config(page_title="Dish Recognition App", layout="wide")
+
+# Custom CSS for UI enhancement
+st.markdown("""
+    <style>
+    .main { background: linear-gradient(to bottom, #1e1e2f, #2a2a3d); color: #e0e0e0; }
+    .stButton>button { background-color: #4CAF50; color: white; border-radius: 10px; }
+    .stFileUploader { border: 2px dashed #4CAF50; padding: 10px; border-radius: 10px; }
+    h1, h2, h3 { color: #4CAF50; font-family: 'Arial', sans-serif; }
+    .stDataFrame { border: 1px solid #4CAF50; border-radius: 10px; }
+    </style>
+""", unsafe_allow_html=True)
 
 # Initialize Streamlit app
-st.title("Dish Recognition and Menu Matching")
+st.title("🍽️ Dish Recognition and Menu Matching")
 
 # Function to validate PEM key
 def validate_pem_key(key_str, key_name):
@@ -30,8 +45,9 @@ def validate_pem_key(key_str, key_name):
 
 # Initialize APIs
 try:
+    # Check if all required sections exist in secrets.toml
     if not all(key in st.secrets for key in ["GOOGLE_CLOUD_VISION_CREDENTIALS", "FIREBASE_CREDENTIALS", "GEMINI"]):
-        st.error("Missing sections in secrets.toml")
+        st.error("Missing sections in secrets.toml: GOOGLE_CLOUD_VISION_CREDENTIALS, FIREBASE_CREDENTIALS, or GEMINI")
         st.stop()
 
     # Google Cloud Vision
@@ -77,24 +93,32 @@ dietary_options = ["Vegan", "Vegetarian", "Gluten-Free", "Keto", "Dairy-Free", "
 selected_preferences = st.sidebar.multiselect(
     "Select Dietary Preferences",
     dietary_options,
-    default=["No Preference"]
+    default=["No Preference"],
+    key="sidebar_dietary"
 )
 
-# Function to detect dish using Google Cloud Vision
+# Function to detect dish with timeout
 def detect_dish(image_content):
-    try:
-        image = vision.Image(content=image_content)
-        response = vision_client.label_detection(image=image)
-        labels = response.label_annotations
-        dish_labels = [label.description for label in labels][:5]
-        if not dish_labels:
-            return "Unknown dish"
-        prompt = f"Based on the following labels from an image, identify the most likely dish: {', '.join(dish_labels)}"
-        response = gemini_model.generate_content(prompt)
-        return response.text.strip()
-    except Exception as e:
-        st.error(f"Error detecting dish: {str(e)}")
-        return None
+    def _detect_dish():
+        try:
+            image = vision.Image(content=image_content)
+            response = vision_client.label_detection(image=image)
+            labels = response.label_annotations
+            dish_labels = [label.description for label in labels][:5]
+            if not dish_labels:
+                return "Unknown dish"
+            prompt = f"Based on the following labels from an image, identify the most likely dish: {', '.join(dish_labels)}"
+            response = gemini_model.generate_content(prompt)
+            return response.text.strip()
+        except Exception as e:
+            return f"Error detecting dish: {str(e)}"
+    
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(_detect_dish)
+        try:
+            return future.result(timeout=10)  # 10-second timeout
+        except TimeoutError:
+            return "Dish detection timed out. Please try again."
 
 # Function to fetch menu from Firebase
 @st.cache_data(ttl=3600)
@@ -103,16 +127,18 @@ def fetch_menu():
         menu_ref = db.collection("menu")
         docs = menu_ref.stream()
         menu_items = [{"id": doc.id, **doc.to_dict()} for doc in docs]
+        if not menu_items:
+            st.warning("No menu items found in Firebase.")
         return menu_items
     except Exception as e:
         st.error(f"Error fetching menu: {str(e)}")
         return []
 
-# Function to find matching or similar dishes using Gemini
+# Function to find matching or similar dishes
 def find_matching_dish(dish_name, menu_items):
     try:
         if not menu_items:
-            return None, "No menu items found in the database. Please contact the restaurant admin."
+            return None, "No menu items found in the database."
         menu_text = "\n".join([f"- {item['name']}: {item.get('description', '')}" for item in menu_items])
         prompt = f"""
         Given the dish '{dish_name}', find the most similar or exact match from the following menu:
@@ -145,8 +171,7 @@ def get_personalized_recommendations(dish_name, menu_items, dietary_preferences)
         If no suitable dishes are found, suggest general alternatives based on the dish type and preferences.
         """
         response = gemini_model.generate_content(prompt)
-        recommendations = response.text.strip()
-        return recommendations
+        return response.text.strip()
     except Exception as e:
         st.error(f"Error generating recommendations: {str(e)}")
         return "No recommendations available due to an error."
@@ -174,20 +199,20 @@ tab1, tab2 = st.tabs(["Dish Recognition", "Menu Exploration"])
 
 with tab1:
     st.header("Upload and Match Dish")
-    uploaded_file = st.file_uploader("Upload an image of the dish", type=["jpg", "png", "jpeg"])
+    uploaded_file = st.file_uploader("Upload an image of the dish (JPG or PNG)", type=["jpg", "png", "jpeg"])
     if uploaded_file is not None:
         try:
             image = Image.open(uploaded_file)
             if image.format not in ["JPEG", "PNG"]:
                 st.error("Unsupported image format. Please upload a JPG or PNG image.")
                 st.stop()
-            st.image(image, caption="Uploaded Dish", use_column_width=True)
+            st.image(image, caption="Uploaded Dish", use_container_width=True)
             img_byte_arr = io.BytesIO()
             image.save(img_byte_arr, format=image.format)
             img_content = img_byte_arr.getvalue()
             with st.spinner("Identifying the dish..."):
                 dish_name = detect_dish(img_content)
-            if dish_name:
+            if isinstance(dish_name, str) and not dish_name.startswith("Error"):
                 st.write(f"Detected dish: **{dish_name}**")
                 with st.spinner("Checking menu for matches..."):
                     menu_items = fetch_menu()
@@ -224,7 +249,7 @@ with tab1:
                     st.markdown("### Menu Preview")
                     st.dataframe(df, use_container_width=True)
             else:
-                st.error("Could not identify the dish. Please try another image.")
+                st.error(dish_name if dish_name.startswith("Error") else "Could not identify the dish. Please try another image.")
         except Exception as e:
             st.error(f"Error processing image: {str(e)}")
 
@@ -233,8 +258,8 @@ with tab2:
     st.subheader("Customize Your Menu")
     dietary_filter = st.multiselect(
         "Filter by Dietary Preferences",
-        ["Vegan", "Vegetarian", "Gluten-Free", "Keto", "Dairy-Free", "Low-Sugar"],
-        default=selected_preferences,
+        ["Vegan", "Vegetarian", "Gluten-Free", "Keto", "Dairy-Free", "Low-Sugar", "No Preference"],
+        default=[pref for pref in selected_preferences if pref in ["Vegan", "Vegetarian", "Gluten-Free", "Keto", "Dairy-Free", "Low-Sugar", "No Preference"]],
         key="menu_filter"
     )
     portion_size = st.selectbox("Select Portion Size", ["Regular", "Small", "Large"], index=0)
@@ -265,13 +290,17 @@ with tab2:
     if st.button("Explore Theme"):
         menu_items = fetch_menu()
         prompt = f"""
-        From the following menu, suggest 3 dishes that fit the '{theme}' theme and align with the dietary preferences: {', '.join(selected_preferences) if selected_preferences else 'None'}. Include the dish name, description, and dietary tags in a formatted markdown list.
+        From the following menu, suggest 3 dishes that fit the '{theme}' theme and align with the dietary preferences: {', '.join(dietary_filter) if dietary_filter else 'None'}. Include the dish name, description, and dietary tags in a formatted markdown list.
         Menu:
         {'\n'.join([f"- {item['name']}: {item.get('description', '')}, Tags: {', '.join(item.get('dietary_tags', []))}" for item in menu_items])}
         """
-        try:
-            response = gemini_model.generate_content(prompt)
-            st.markdown("### Themed Suggestions")
-            st.markdown(response.text.strip())
-        except Exception as e:
-            st.error(f"Error generating themed suggestions: {str(e)}")
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(lambda: gemini_model.generate_content(prompt).text.strip())
+            try:
+                response = future.result(timeout=10)
+                st.markdown("### Themed Suggestions")
+                st.markdown(response)
+            except TimeoutError:
+                st.error("Themed suggestions timed out. Please try again.")
+            except Exception as e:
+                st.error(f"Error generating themed suggestions: {str(e)}")
