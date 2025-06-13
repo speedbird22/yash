@@ -7,6 +7,13 @@ import google.generativeai as genai
 from cryptography.hazmat.primitives import serialization
 from PIL import Image
 import io
+import signal
+import logging
+import sys
+
+# Set up logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 # Custom CSS for enhanced UI features without colors
 st.markdown("""
@@ -98,6 +105,16 @@ with st.sidebar:
 # Header
 st.markdown("### 🍽️ Dish Recognition and Menu Matching")
 
+# Timeout handler for API calls
+def timeout_handler(signum, frame):
+    raise TimeoutError("Operation timed out")
+
+# Function to resize image
+def resize_image(image, max_size=(800, 800)):
+    logger.info("Resizing image...")
+    image.thumbnail(max_size, Image.Resampling.LANCZOS)
+    return image
+
 # Main content container
 with st.container():
     # Function to validate PEM key
@@ -162,16 +179,37 @@ with st.container():
     # Function to detect dish using Google Cloud Vision
     def detect_dish(image_content):
         try:
+            logger.info("Starting dish detection...")
             image = vision.Image(content=image_content)
+            # Set timeout for Vision API call
+            signal.signal(signal.SIGALRM, timeout_handler)
+            signal.alarm(10)  # 10 seconds timeout
+            logger.info("Calling Vision API for label detection...")
             response = vision_client.label_detection(image=image)
             labels = response.label_annotations
+            signal.alarm(0)  # Disable timeout
+            logger.info("Vision API call completed.")
+            
             dish_labels = [label.description for label in labels][:5]
             if not dish_labels:
                 return "Unknown dish"
+            
+            # Set timeout for Gemini API call
+            signal.signal(signal.SIGALRM, timeout_handler)
+            signal.alarm(10)  # 10 seconds timeout
+            logger.info("Calling Gemini API for dish identification...")
             prompt = f"Based on the following labels from an image, identify the most likely dish: {', '.join(dish_labels)}"
             response = gemini_model.generate_content(prompt)
+            signal.alarm(0)  # Disable timeout
+            logger.info("Gemini API call completed.")
+            
             return response.text.strip()
+        except TimeoutError:
+            logger.error("Dish detection timed out.")
+            st.error("Dish detection took too long. Please try again with a different image.")
+            return None
         except Exception as e:
+            logger.error(f"Error detecting dish: {str(e)}")
             st.error(f"Error detecting dish: {str(e)}")
             return None
 
@@ -179,11 +217,21 @@ with st.container():
     @st.cache_data(ttl=3600)
     def fetch_menu():
         try:
+            logger.info("Fetching menu from Firebase...")
+            signal.signal(signal.SIGALRM, timeout_handler)
+            signal.alarm(10)  # 10 seconds timeout
             menu_ref = db.collection("menu")
             docs = menu_ref.stream()
             menu_items = [{"id": doc.id, **doc.to_dict()} for doc in docs]
+            signal.alarm(0)  # Disable timeout
+            logger.info("Menu fetched successfully.")
             return menu_items
+        except TimeoutError:
+            logger.error("Fetching menu timed out.")
+            st.error("Fetching menu took too long. Please try again later.")
+            return []
         except Exception as e:
+            logger.error(f"Error fetching menu: {str(e)}")
             st.error(f"Error fetching menu: {str(e)}")
             return []
 
@@ -199,7 +247,14 @@ with st.container():
             Return the name of the matching dish or suggest a similar one if no exact match is found.
             If no close match exists, return 'No close match found'.
             """
+            # Set timeout for Gemini API call
+            signal.signal(signal.SIGALRM, timeout_handler)
+            signal.alarm(10)  # 10 seconds timeout
+            logger.info("Calling Gemini API for menu matching...")
             response = gemini_model.generate_content(prompt)
+            signal.alarm(0)  # Disable timeout
+            logger.info("Gemini API call for menu matching completed.")
+            
             match = response.text.strip()
             for item in menu_items:
                 if item["name"].lower() == match.lower():
@@ -207,7 +262,12 @@ with st.container():
                 if match.lower() in item["name"].lower() or match.lower() in item.get("description", "").lower():
                     return item, "Similar dish found!"
             return None, match if match != "No close match found" else "No close match found in the menu."
+        except TimeoutError:
+            logger.error("Menu matching timed out.")
+            st.error("Menu matching took too long. Please try again.")
+            return None, "Operation timed out."
         except Exception as e:
+            logger.error(f"Error matching dish: {str(e)}")
             st.error(f"Error matching dish: {str(e)}")
             return None, "Error occurred while matching dish."
 
@@ -217,10 +277,17 @@ with st.container():
 
     if uploaded_file is not None:
         try:
+            logger.info("Image uploaded, starting processing...")
+            # Open and resize image
             image = Image.open(uploaded_file)
             if image.format not in ["JPEG", "PNG"]:
                 st.error("Unsupported image format. Please upload a JPG or PNG image.")
                 st.stop()
+            
+            image = resize_image(image)  # Resize image to speed up processing
+            img_byte_arr = io.BytesIO()
+            image.save(img_byte_arr, format=image.format)
+            img_content = img_byte_arr.getvalue()
 
             # Create two columns for image and results
             col1, col2 = st.columns([1, 1])
@@ -234,7 +301,7 @@ with st.container():
                 with st.spinner(""):
                     # Custom spinner with animation
                     st.markdown('<div class="custom-spinner"></div>Identifying the dish...', unsafe_allow_html=True)
-                    dish_name = detect_dish(image.tobytes())
+                    dish_name = detect_dish(img_content)
                 if dish_name:
                     # Output in a styled card with fade-in animation
                     st.markdown('<div class="output-card">', unsafe_allow_html=True)
@@ -259,4 +326,5 @@ with st.container():
                 else:
                     st.error("Could not identify the dish. Please try another image.")
         except Exception as e:
+            logger.error(f"Error processing image: {str(e)}")
             st.error(f"Error processing image: {str(e)}")
