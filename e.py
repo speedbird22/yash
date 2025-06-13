@@ -1,109 +1,131 @@
 import streamlit as st
-import os
 from google.cloud import vision
-from google.oauth2 import service_account
+import google.generativeai as genai
 import firebase_admin
 from firebase_admin import credentials, firestore
-import google.generativeai as genai
+import os
 from PIL import Image
 import io
+import json
 
-# Retrieve Google Cloud Vision credentials from Streamlit secrets
-google_creds_dict = {
-    "type": st.secrets["google_credentials"]["type"],
-    "project_id": st.secrets["google_credentials"]["project_id"],
-    "private_key_id": st.secrets["google_credentials"]["private_key_id"],
-    "private_key": st.secrets["google_credentials"]["private_key"],
-    "client_email": st.secrets["google_credentials"]["client_email"],
-    "client_id": st.secrets["google_credentials"]["client_id"],
-    "auth_uri": st.secrets["google_credentials"]["auth_uri"],
-    "token_uri": st.secrets["google_credentials"]["token_uri"],
-    "auth_provider_x509_cert_url": st.secrets["google_credentials"]["auth_provider_x509_cert_url"],
-    "client_x509_cert_url": st.secrets["google_credentials"]["client_x509_cert_url"],
-    "universe_domain": st.secrets["google_credentials"]["universe_domain"]
-}
-google_creds = service_account.Credentials.from_service_account_info(google_creds_dict)
-
-# Initialize Google Vision client with the credentials
-vision_client = vision.ImageAnnotatorClient(credentials=google_creds)
-
-# Set up Firebase credentials using the JSON file
-if not firebase_admin._apps:
-    cred = credentials.Certificate("firebase-credentials.json")
-    firebase_admin.initialize_app(cred)
-db = firestore.client()
-
-# Set up Gemini API key
-GEMINI_API_KEY = "your-gemini-api-key"  # Replace with your actual Gemini API key
-genai.configure(api_key=GEMINI_API_KEY)
-
-# Streamlit app title
+# Initialize Streamlit app
 st.title("Dish Recognition and Menu Matching")
+st.write("Upload an image of a dish, and we'll identify it and check if it's on the menu!")
 
-# File uploader for image
-uploaded_file = st.file_uploader("Upload an image of a dish", type=["jpg", "jpeg", "png"])
+# Load credentials and initialize APIs
+try:
+    # Google Cloud Vision setup
+    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "vision-credentials.json")
+    vision_client = vision.ImageAnnotatorClient()
 
+    # Firebase setup
+    if not firebase_admin._apps:
+        firebase_cred = credentials.Certificate(os.getenv("FIREBASE_CREDENTIALS", "firebase-credentials.json"))
+        firebase_admin.initialize_app(firebase_cred)
+    db = firestore.client()
+
+    # Gemini API setup
+    gemini_api_key = os.getenv("GEMINI_API_KEY", st.secrets.get("GEMINI_API_KEY", ""))
+    if not gemini_api_key:
+        st.error("Gemini API key not found. Please set it in .env or Streamlit secrets.")
+        st.stop()
+    genai.configure(api_key=gemini_api_key)
+    gemini_model = genai.GenerativeModel("gemini-1.5-flash")
+
+except Exception as e:
+    st.error(f"Error initializing APIs: {str(e)}")
+    st.stop()
+
+# Function to detect dish using Google Cloud Vision
 def detect_dish(image_content):
-    """Use Google Vision API to detect labels in the image."""
-    image = vision.Image(content=image_content)
-    response = vision_client.label_detection(image=image)
-    labels = response.label_annotations
-    return [label.description for label in labels]
+    try:
+        image = vision.Image(content=image_content)
+        response = vision_client.label_detection(image=image)
+        labels = response.label_annotations
+        dish_labels = [label.description for label in labels if "food" in label.description.lower() or "dish" in label.description.lower()]
+        
+        if not dish_labels:
+            return "Unknown dish"
+        
+        # Use Gemini to refine the dish identification
+        prompt = f"Based on the following labels from an image, identify the most likely dish: {', '.join(dish_labels)}"
+        response = gemini_model.generate_content(prompt)
+        return response.text.strip()
+    except Exception as e:
+        st.error(f"Error detecting dish: {str(e)}")
+        return None
 
-def get_menu_from_firebase():
-    """Fetch menu items from Firestore."""
-    menu_ref = db.collection("menu")
-    docs = menu_ref.stream()
-    menu_items = []
-    for doc in docs:
-        item = doc.to_dict()
-        item["id"] = doc.id
-        menu_items.append(item)
-    return menu_items
+# Function to fetch menu from Firebase
+def fetch_menu():
+    try:
+        menu_ref = db.collection("menu")
+        docs = menu_ref.stream()
+        menu_items = [{"id": doc.id, **doc.to_dict()} for doc in docs]
+        return menu_items
+    except Exception as e:
+        st.error(f"Error fetching menu: {str(e)}")
+        return []
 
-def find_matching_dish(dish_labels, menu_items):
-    """Use Gemini API to find matching or similar dishes in the menu."""
-    menu_text = "\n".join([f"{item['name']}: {item['description']}" for item in menu_items])
-    prompt = f"""
-    Based on the following detected labels from an image: {', '.join(dish_labels)},
-    find the most matching or similar dish from this menu:
-    {menu_text}
-    
-    Return the name of the matching dish or suggest a similar dish if no exact match is found.
-    If no match is found, return 'No match found'.
-    """
-    model = genai.GenerativeModel("gemini-1.5-flash")
-    response = model.generate_content(prompt)
-    return response.text.strip()
+# Function to find matching or similar dishes using Gemini
+def find_matching_dish(dish_name, menu_items):
+    try:
+        if not menu_items:
+            return None, "No menu items found in the database."
+        
+        # Create a prompt for Gemini to match the dish
+        menu_text = "\n".join([f"- {item['name']}: {item.get('description', '')}" for item in menu_items])
+        prompt = f"""
+        Given the dish '{dish_name}', find the most similar or exact match from the following menu:
+        {menu_text}
+        Return the name of the matching dish or suggest a similar one if no exact match is found.
+        If no close match exists, return 'No close match found'.
+        """
+        response = gemini_model.generate_content(prompt)
+        match = response.text.strip()
+        
+        # Check if an exact or close match was found
+        for item in menu_items:
+            if item["name"].lower() == match.lower():
+                return item, "Exact match found!"
+            if match.lower() in item["name"].lower() or match.lower() in item.get("description", "").lower():
+                return item, "Similar dish found!"
+        
+        return None, match if match != "No close match found" else "No close match found in the menu."
+    except Exception as e:
+        st.error(f"Error matching dish: {str(e)}")
+        return None, "Error occurred while matching dish."
+
+# Streamlit file uploader
+uploaded_file = st.file_uploader("Upload an image of the dish", type=["jpg", "png", "jpeg"])
 
 if uploaded_file is not None:
     # Display uploaded image
     image = Image.open(uploaded_file)
-    st.image(image, caption="Uploaded Dish Image", use_column_width=True)
+    st.image(image, caption="Uploaded Dish", use_column_width=True)
 
     # Convert image to bytes for Vision API
-    image_bytes = io.BytesIO()
-    image.save(image_bytes, format=image.format)
-    image_content = image_bytes.getvalue()
+    img_byte_arr = io.BytesIO()
+    image.save(img_byte_arr, format=image.format)
+    img_content = img_byte_arr.getvalue()
 
-    # Detect dish using Google Vision API
-    with st.spinner("Detecting dish..."):
-        dish_labels = detect_dish(image_content)
-        st.write("Detected Labels:", dish_labels)
-
-    # Fetch menu from Firebase
-    with st.spinner("Fetching menu..."):
-        menu_items = get_menu_from_firebase()
-
-    # Find matching dish using Gemini API
-    with st.spinner("Finding matching dish..."):
-        matching_dish = find_matching_dish(dish_labels, menu_items)
-        st.success(f"Matching Dish: {matching_dish}")
-
-# Instructions for running the app
-st.sidebar.header("Instructions")
-st.sidebar.write("1. Upload an image of a dish.")
-st.sidebar.write("2. The app will detect the dish using Google Vision API.")
-st.sidebar.write("3. It will then check for matching or similar items in the menu using Gemini API.")
-st.sidebar.write("4. Ensure Google credentials are set in Streamlit Cloud secrets.")
-st.sidebar.write("5. Ensure firebase-credentials.json is uploaded to Streamlit Cloud.")
+    # Detect dish
+    with st.spinner("Identifying the dish..."):
+        dish_name = detect_dish(img_content)
+    
+    if dish_name:
+        st.write(f"Detected dish: **{dish_name}**")
+        
+        # Fetch menu and find matching dish
+        with st.spinner("Checking menu for matches..."):
+            menu_items = fetch_menu()
+            match, message = find_matching_dish(dish_name, menu_items)
+        
+        # Display results
+        st.subheader("Menu Match Result")
+        st.write(message)
+        if match:
+            st.write(f"**Dish Name**: {match['name']}")
+            st.write(f"**Description**: {match.get('description', 'No description available')}")
+            st.write(f"**Ingredients**: {', '.join(match.get('ingredients', []))}")
+    else:
+        st.error("Could not identify the dish. Please try another image.")
