@@ -176,13 +176,13 @@ def get_personalized_recommendations(dish_name, menu_items, dietary_preferences)
         st.error(f"Error generating recommendations: {str(e)}")
         return "No recommendations available due to an error."
 
-# Customize Menu Option
+# Customize Menu Option (Fixed NameError)
 def customize_menu(menu_items, dietary_preferences, portion_size=None, ingredient_swaps=None):
     try:
         filtered_items = []
         for item in menu_items:
             item_preferences = item.get("dietary_tags", [])
-            if not dietary_preferences or "No Preference" in dietary_preferences or any(pref.lower() in [tag.lower() for tag in item_preferences]):
+            if not dietary_preferences or "No Preference" in dietary_preferences or any(p.lower() in [tag.lower() for tag in item_preferences] for p in dietary_preferences):
                 filtered_item = item.copy()
                 if portion_size:
                     filtered_item["portion_size"] = portion_size
