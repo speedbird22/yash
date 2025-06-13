@@ -8,8 +8,48 @@ from cryptography.hazmat.primitives import serialization
 from PIL import Image
 import io
 
-# Initialize Streamlit app
-st.title("Dish Recognition and Menu Matching")
+# Custom CSS for styling
+st.markdown("""
+    <style>
+    .header {
+        background-color: #4CAF50;
+        padding: 20px;
+        border-radius: 10px;
+        text-align: center;
+        color: white;
+        font-size: 28px;
+        font-weight: bold;
+        margin-bottom: 20px;
+    }
+    .result-box {
+        background-color: #f9f9f9;
+        padding: 15px;
+        border-radius: 10px;
+        border: 1px solid #ddd;
+        margin-top: 10px;
+    }
+    .footer {
+        text-align: center;
+        color: #888;
+        margin-top: 30px;
+        font-size: 14px;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
+# Sidebar for instructions
+with st.sidebar:
+    st.header("📋 How to Use This App")
+    st.markdown("""
+    1. **Upload an Image**: Use the file uploader below to upload a JPG or PNG image of a dish.
+    2. **Wait for Analysis**: The app will identify the dish and search for a matching item in the menu.
+    3. **View Results**: Check the results below the image for the detected dish and menu match.
+    - Supported formats: JPG, PNG
+    - Ensure the image is clear for accurate detection.
+    """)
+
+# Header
+st.markdown('<div class="header">🍽️ Dish Recognition and Menu Matching</div>', unsafe_allow_html=True)
 
 # Function to validate PEM key
 def validate_pem_key(key_str, key_name):
@@ -122,32 +162,47 @@ def find_matching_dish(dish_name, menu_items):
         st.error(f"Error matching dish: {str(e)}")
         return None, "Error occurred while matching dish."
 
-# Streamlit file uploader
-uploaded_file = st.file_uploader("Upload an image of the dish", type=["jpg", "png", "jpeg"])
+# Streamlit file uploader with improved layout
+st.markdown("### 📸 Upload Your Dish Image")
+uploaded_file = st.file_uploader("Choose a JPG or PNG image of the dish", type=["jpg", "png", "jpeg"])
+
 if uploaded_file is not None:
     try:
         image = Image.open(uploaded_file)
         if image.format not in ["JPEG", "PNG"]:
             st.error("Unsupported image format. Please upload a JPG or PNG image.")
             st.stop()
-        st.image(image, caption="Uploaded Dish", use_container_width=True)
-        img_byte_arr = io.BytesIO()
-        image.save(img_byte_arr, format=image.format)
-        img_content = img_byte_arr.getvalue()
-        with st.spinner("Identifying the dish..."):
-            dish_name = detect_dish(img_content)
-        if dish_name:
-            st.write(f"Detected dish: **{dish_name}**")
-            with st.spinner("Checking menu for matches..."):
-                menu_items = fetch_menu()
-                match, message = find_matching_dish(dish_name, menu_items)
-            st.subheader("Menu Match Result")
-            st.write(message)
-            if match:
-                st.write(f"**Dish Name**: {match['name']}")
-                st.write(f"**Description**: {match.get('description', 'No description available')}")
-                st.write(f"**Ingredients**: {', '.join(match.get('ingredients', []))}")
-        else:
-            st.error("Could not identify the dish. Please try another image.")
+
+        # Create two columns for image and results
+        col1, col2 = st.columns([1, 1])
+        
+        with col1:
+            st.markdown("#### Uploaded Image")
+            st.image(image, caption="Your Dish", use_container_width=True)
+
+        with col2:
+            st.markdown("#### Analysis Results")
+            with st.spinner("🔍 Identifying the dish..."):
+                dish_name = detect_dish(image.tobytes())
+            if dish_name:
+                st.success(f"Detected dish: **{dish_name}**")
+                with st.spinner("🍴 Checking menu for matches..."):
+                    menu_items = fetch_menu()
+                    match, message = find_matching_dish(dish_name, menu_items)
+                
+                # Display results in a styled box
+                st.markdown('<div class="result-box">', unsafe_allow_html=True)
+                st.markdown("**Menu Match Result**")
+                st.write(message)
+                if match:
+                    st.markdown(f"**Dish Name**: {match['name']}")
+                    st.markdown(f"**Description**: {match.get('description', 'No description available')}")
+                    st.markdown(f"**Ingredients**: {', '.join(match.get('ingredients', []))}")
+                st.markdown('</div>', unsafe_allow_html=True)
+            else:
+                st.error("Could not identify the dish. Please try another image.")
     except Exception as e:
         st.error(f"Error processing image: {str(e)}")
+
+# Footer
+st.markdown('<div class="footer">Powered by xAI | Dish Recognition App v1.0</div>', unsafe_allow_html=True)
