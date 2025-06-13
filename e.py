@@ -10,7 +10,7 @@ import io
 
 # Initialize Streamlit app
 st.title("Dish Recognition and Menu Matching")
-st.write(f"Current date and time: 10:46 AM IST on Friday, June 13, 2025")
+st.write(f"Current date and time: 02:22 PM IST on Friday, June 13, 2025")
 
 # Function to validate PEM key
 def validate_pem_key(key_str, key_name):
@@ -131,7 +131,7 @@ if uploaded_file is not None:
         if image.format not in ["JPEG", "PNG"]:
             st.error("Unsupported image format. Please upload a JPG or PNG image.")
             st.stop()
-        st.image(image, caption="Uploaded Dish", use_column_width=True)
+        st.image(image, caption="Uploaded Dish", use_container_width=True)
         img_byte_arr = io.BytesIO()
         image.save(img_byte_arr, format=image.format)
         img_content = img_byte_arr.getvalue()
