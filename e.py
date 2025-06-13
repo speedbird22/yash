@@ -2,12 +2,11 @@ import streamlit as st
 from google.cloud import vision
 from google.oauth2 import service_account
 import firebase_admin
-from firebase_admin import credentials, firestore, auth
+from firebase_admin import credentials, firestore
 import google.generativeai as genai
 from cryptography.hazmat.primitives import serialization
 from PIL import Image
 import io
-import json
 import pandas as pd
 
 # Initialize Streamlit app
@@ -72,63 +71,14 @@ except Exception as e:
     st.error(f"Error initializing APIs: {str(e)}")
     st.stop()
 
-# Customer Authentication
-st.sidebar.header("Customer Login")
-email = st.sidebar.text_input("Email")
-password = st.sidebar.text_input("Password", type="password")
-login_button = st.sidebar.button("Login")
-logout_button = st.sidebar.button("Logout")
-
-if 'user' not in st.session_state:
-    st.session_state.user = None
-
-if login_button:
-    try:
-        user = auth.sign_in_with_email_and_password(email, password)
-        st.session_state.user = user
-        st.sidebar.success("Logged in successfully!")
-    except Exception as e:
-        st.sidebar.error(f"Login failed: {str(e)}")
-
-if logout_button and st.session_state.user:
-    st.session_state.user = None
-    st.sidebar.success("Logged out successfully!")
-
-# Fetch customer profile
-def fetch_customer_profile(user_id):
-    try:
-        doc = db.collection("customers").document(user_id).get()
-        if doc.exists:
-            return doc.to_dict()
-        return {"order_history": [], "dietary_preferences": []}
-    except Exception as e:
-        st.error(f"Error fetching customer profile: {str(e)}")
-        return {"order_history": [], "dietary_preferences": []}
-
-# Save customer profile
-def save_customer_profile(user_id, profile):
-    try:
-        db.collection("customers").document(user_id).set(profile)
-    except Exception as e:
-        st.error(f"Error saving customer profile: {str(e)}")
-
 # Dietary Preferences Input
 st.sidebar.header("Dietary Preferences")
-if st.session_state.user:
-    user_id = st.session_state.user["localId"]
-    profile = fetch_customer_profile(user_id)
-    dietary_options = ["Vegan", "Vegetarian", "Gluten-Free", "Keto", "Dairy-Free", "Low-Sugar", "No Preference"]
-    selected_preferences = st.sidebar.multiselect(
-        "Select Dietary Preferences",
-        dietary_options,
-        default=profile.get("dietary_preferences", [])
-    )
-    if st.sidebar.button("Save Preferences"):
-        profile["dietary_preferences"] = selected_preferences
-        save_customer_profile(user_id, profile)
-        st.sidebar.success("Preferences saved!")
-else:
-    st.sidebar.warning("Please log in to set dietary preferences.")
+dietary_options = ["Vegan", "Vegetarian", "Gluten-Free", "Keto", "Dairy-Free", "Low-Sugar", "No Preference"]
+selected_preferences = st.sidebar.multiselect(
+    "Select Dietary Preferences",
+    dietary_options,
+    default=["No Preference"]
+)
 
 # Function to detect dish using Google Cloud Vision
 def detect_dish(image_content):
@@ -183,16 +133,13 @@ def find_matching_dish(dish_name, menu_items):
         return None, "Error occurred while matching dish."
 
 # Function to generate personalized recommendations
-def get_personalized_recommendations(dish_name, menu_items, order_history, dietary_preferences):
+def get_personalized_recommendations(dish_name, menu_items, dietary_preferences):
     try:
-        menu_text = "\n".join([f"- {item['name']}: {item.get('description', '')}, Ingredients: {', '.join(item.get('ingredients', []))}" for item in menu_items])
-        history_text = "\n".join([f"- {order['name']}" for order in order_history]) if order_history else "No order history available."
+        menu_text = "\n".join([f"- {item['name']}: {item.get('description', '')}, Ingredients: {', '.join(item.get('ingredients', []))}, Tags: {', '.join(item.get('dietary_tags', []))}" for item in menu_items])
         preferences_text = ", ".join(dietary_preferences) if dietary_preferences else "No dietary preferences specified."
         prompt = f"""
-        Given the detected dish '{dish_name}', the customer's order history:
-        {history_text}
-        and dietary preferences: {preferences_text},
-        recommend up to 3 personalized dishes from the following menu that align with the detected dish, dietary preferences, and popular trends (e.g., vegan, gluten-free, low-sugar options). For each recommendation, suggest possible customizations (e.g., ingredient swaps, portion sizes). Provide the dish name, description, and customizations in a clear format.
+        Given the detected dish '{dish_name}' and dietary preferences: {preferences_text},
+        recommend up to 3 personalized dishes from the following menu that align with the detected dish, dietary preferences, and popular trends (e.g., vegan, gluten-free, low-sugar options). For each recommendation, suggest possible customizations (e.g., ingredient swaps, portion sizes). Provide the output in a formatted markdown list with dish name, description, dietary tags, and customizations.
         Menu:
         {menu_text}
         If no suitable dishes are found, suggest general alternatives based on the dish type and preferences.
@@ -210,7 +157,7 @@ def customize_menu(menu_items, dietary_preferences, portion_size=None, ingredien
         filtered_items = []
         for item in menu_items:
             item_preferences = item.get("dietary_tags", [])
-            if not dietary_preferences or any(pref.lower() in [tag.lower() for tag in item_preferences]):
+            if not dietary_preferences or "No Preference" in dietary_preferences or any(pref.lower() in [tag.lower() for tag in item_preferences]):
                 filtered_item = item.copy()
                 if portion_size:
                     filtered_item["portion_size"] = portion_size
@@ -251,17 +198,31 @@ with tab1:
                     st.write(f"**Dish Name**: {match['name']}")
                     st.write(f"**Description**: {match.get('description', 'No description available')}")
                     st.write(f"**Ingredients**: {', '.join(match.get('ingredients', []))}")
+                    st.write(f"**Dietary Tags**: {', '.join(match.get('dietary_tags', []))}")
                 
                 # Personalized Recommendations
-                if st.session_state.user:
-                    st.subheader("Personalized Recommendations")
-                    profile = fetch_customer_profile(user_id)
-                    recommendations = get_personalized_recommendations(
-                        dish_name, menu_items, profile.get("order_history", []), profile.get("dietary_preferences", [])
-                    )
-                    st.markdown(recommendations)
-                else:
-                    st.warning("Log in to receive personalized recommendations based on your order history and preferences.")
+                st.subheader("Recommended Dishes")
+                with st.spinner("Generating personalized recommendations..."):
+                    recommendations = get_personalized_recommendations(dish_name, menu_items, selected_preferences)
+                st.markdown("### Suggested Menu")
+                st.markdown(recommendations)
+                
+                # Display recommendations in a table
+                recommended_items = customize_menu(menu_items, selected_preferences)
+                if recommended_items:
+                    df = pd.DataFrame([
+                        {
+                            "Name": item["name"],
+                            "Description": item.get("description", "No description"),
+                            "Ingredients": ", ".join(item.get("ingredients", [])),
+                            "Dietary Tags": ", ".join(item.get("dietary_tags", [])),
+                            "Portion Size": item.get("portion_size", "Regular"),
+                            "Custom Ingredients": item.get("custom_ingredients", "None")
+                        }
+                        for item in recommended_items
+                    ])
+                    st.markdown("### Menu Preview")
+                    st.dataframe(df, use_container_width=True)
             else:
                 st.error("Could not identify the dish. Please try another image.")
         except Exception as e:
@@ -273,6 +234,7 @@ with tab2:
     dietary_filter = st.multiselect(
         "Filter by Dietary Preferences",
         ["Vegan", "Vegetarian", "Gluten-Free", "Keto", "Dairy-Free", "Low-Sugar"],
+        default=selected_preferences,
         key="menu_filter"
     )
     portion_size = st.selectbox("Select Portion Size", ["Regular", "Small", "Large"], index=0)
@@ -287,6 +249,7 @@ with tab2:
                     "Name": item["name"],
                     "Description": item.get("description", "No description"),
                     "Ingredients": ", ".join(item.get("ingredients", [])),
+                    "Dietary Tags": ", ".join(item.get("dietary_tags", [])),
                     "Portion Size": item.get("portion_size", "Regular"),
                     "Custom Ingredients": item.get("custom_ingredients", "None")
                 }
@@ -302,12 +265,13 @@ with tab2:
     if st.button("Explore Theme"):
         menu_items = fetch_menu()
         prompt = f"""
-        From the following menu, suggest 3 dishes that fit the '{theme}' theme. Include the dish name, description, and any relevant dietary tags.
+        From the following menu, suggest 3 dishes that fit the '{theme}' theme and align with the dietary preferences: {', '.join(selected_preferences) if selected_preferences else 'None'}. Include the dish name, description, and dietary tags in a formatted markdown list.
         Menu:
         {'\n'.join([f"- {item['name']}: {item.get('description', '')}, Tags: {', '.join(item.get('dietary_tags', []))}" for item in menu_items])}
         """
         try:
             response = gemini_model.generate_content(prompt)
+            st.markdown("### Themed Suggestions")
             st.markdown(response.text.strip())
         except Exception as e:
             st.error(f"Error generating themed suggestions: {str(e)}")
